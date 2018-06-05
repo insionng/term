@@ -4,6 +4,7 @@
 
 package ansi
 
+// SGR 控制码
 const (
 	SGRReset           = "0"
 	SGRBold            = "1"
@@ -38,7 +39,7 @@ const (
 	SGRBDefault = "49" // 默认背景色
 )
 
-// 将几个SGR控制符合成一个ansi控制符
+// SGR 将几个 SGR 控制符合成一个ansi控制符
 //  "30", "31", "32"
 //  // 以上参数将会被转换成以下内容返回
 //  "\033[30;31;32m"

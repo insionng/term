@@ -13,16 +13,17 @@ import (
 func TestColorize(t *testing.T) {
 	a := assert.New(t)
 
-	c := New(Stderr, Green, White)
+	c := New(Green, White)
 	_, err := c.Print("Colorize.Print:: foreground:", Green, ";background:", White, "\n")
 	a.NotError(err)
 
-	c.SetColor(Red, Black)
+	c.Background = Red
+	c.Background = Black
 	_, err = c.Println("Colorize.Println:: foreground:", Red, ";background:", Black)
 	a.NotError(err)
 
-	c.SetColor(Black, Cyan)
-	c.SetOut(Stdout)
+	c.Background = Black
+	c.Background = Cyan
 	_, err = c.Printf("Colorize.Printf:: foreground:%v;background:%v\n", Black, Cyan)
 	a.NotError(err)
 }

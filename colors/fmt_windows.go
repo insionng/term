@@ -5,7 +5,6 @@
 package colors
 
 import (
-	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -43,7 +42,7 @@ const (
 )
 
 // 前景色对照表
-var foreTables = [...]uint16{
+var foreTables = []uint16{
 	Default: fWhite,
 	Black:   0,
 	Red:     fRed,
@@ -56,7 +55,7 @@ var foreTables = [...]uint16{
 }
 
 // 背景色对照表
-var backTables = [...]uint16{
+var backTables = []uint16{
 	Default: 0,
 	Black:   0,
 	Red:     bRed,
@@ -72,29 +71,42 @@ type coord struct {
 	X, Y int16
 }
 
-type small_rect struct {
+type smallRect struct {
 	Left, Top, Right, Bottom int16
 }
 
-type console_screen_buffer_info struct {
+type consoleScreenBufferInfo struct {
 	DwSize              coord
 	DwCursorPosition    coord
 	WAttributes         uint16
-	SrWindow            small_rect
+	SrWindow            smallRect
 	DwMaximumWindowSize coord
 }
 
 var (
-	kernel32                   = syscall.NewLazyDLL("kernel32.dll")
-	setConsoleTextAttribute    = kernel32.NewProc("SetConsoleTextAttribute")
-	getConsoleScreenBufferInfo = kernel32.NewProc("GetConsoleScreenBufferInfo")
+	isMsys bool
+
+	kernel32                   *syscall.LazyDLL
+	setConsoleTextAttribute    *syscall.LazyProc
+	getConsoleScreenBufferInfo *syscall.LazyProc
 )
 
-// 设置控制台颜色。对SetConsoleTextAttribute()的简单包装，
-// 使参数更符合go的风格。
+func init() {
+	if len(os.Getenv("MSYSTEM")) > 0 { // msys 环境
+		isMsys = true
+		return
+	}
+
+	kernel32 = syscall.NewLazyDLL("kernel32.dll")
+	setConsoleTextAttribute = kernel32.NewProc("SetConsoleTextAttribute")
+	getConsoleScreenBufferInfo = kernel32.NewProc("GetConsoleScreenBufferInfo")
+}
+
+// 设置控制台颜色。对 SetConsoleTextAttribute() 的简单包装，
+// 使参数更符合 Go 的风格。
 func setColor(h syscall.Handle, attr uint16) error {
 	r1, _, err := setConsoleTextAttribute.Call(uintptr(h), uintptr(attr))
-	if int(r1) == 0 { // setConsoleTextAttribute返回BOOL，而不是bool
+	if int(r1) == 0 { // setConsoleTextAttribute 返回 BOOL，而不是 bool
 		return err
 	}
 
@@ -103,49 +115,59 @@ func setColor(h syscall.Handle, attr uint16) error {
 
 // 获取颜色值
 func getColor(h syscall.Handle) (uint16, error) {
-	var csbi console_screen_buffer_info
+	var csbi consoleScreenBufferInfo
 	r1, _, err := getConsoleScreenBufferInfo.Call(uintptr(h), uintptr(unsafe.Pointer(&csbi)))
-	if int(r1) == 0 { // getConsoleScreenBufferInfo返回BOOL，而不是bool
+	if int(r1) == 0 { // getConsoleScreenBufferInfo 返回 BOOL，而不是 bool
 		return 0, err
 	}
 	return csbi.WAttributes, nil
 }
 
-// 根据out获取与之相对应的Handler和writer
-func getHW(out int) (syscall.Handle, io.Writer, error) {
-	switch out {
-	case Stderr:
-		return syscall.Stderr, os.Stderr, nil
-	case Stdout:
-		return syscall.Stdout, os.Stdout, nil
+// 根据 out 获取与之相对应的 Handler 以及是否可以使用颜色
+func getHW(out io.Writer) (syscall.Handle, bool) {
+	o, ok := out.(*os.File)
+	if !ok {
+		return 0, false
+	}
+
+	switch o {
+	case os.Stderr:
+		return syscall.Stderr, true
+	case os.Stdout:
+		return syscall.Stdout, true
+	case os.Stdin:
+		return syscall.Stdin, true
 	default:
-		return 0, nil, errors.New("无效的输出类型")
+		return 0, false
 	}
 }
 
-func print1(out int, attr uint16, v ...interface{}) (size int, err error) {
-	h, w, err := getHW(out)
-	if err != nil {
-		return 0, err
+// Fprint 带色彩输出的 fmt.Fprint。
+// 颜色值只在 w 不为 os.Stderr、os.Stdin、os.Stdout 中的一个时才启作用，否则只向 w 输出普通字符串。
+func Fprint(w io.Writer, foreground, background Color, v ...interface{}) (size int, err error) {
+	if isMsys {
+		return fprint(w, foreground, background, v...)
 	}
 
-	// 保存原始颜色值
+	h, ok := getHW(w)
+	if !ok {
+		return fmt.Fprint(w, v...)
+	}
+
 	origin, err := getColor(h)
 	if err != nil {
 		return 0, err
 	}
 
-	// 设置新的颜色值
+	attr := foreTables[foreground] + backTables[background]
 	if err = setColor(h, attr); err != nil {
 		return 0, err
 	}
 
-	// 输出字符内容
 	if size, err = fmt.Fprint(w, v...); err != nil {
 		return size, err
 	}
 
-	// 还原原始颜色
 	if err = setColor(h, origin); err != nil {
 		return 0, err
 	}
@@ -153,10 +175,16 @@ func print1(out int, attr uint16, v ...interface{}) (size int, err error) {
 	return
 }
 
-func println1(out int, attr uint16, v ...interface{}) (size int, err error) {
-	h, w, err := getHW(out)
-	if err != nil {
-		return 0, err
+// Fprintln 带色彩输出的 fmt.Fprintln。
+// 颜色值只在 w 不为 os.Stderr、os.Stdin、os.Stdout 中的一个时才启作用，否则只向 w 输出普通字符串。
+func Fprintln(w io.Writer, foreground, background Color, v ...interface{}) (size int, err error) {
+	if isMsys {
+		return fprintln(w, foreground, background, v...)
+	}
+
+	h, ok := getHW(w)
+	if !ok {
+		return fmt.Fprintln(w, v...)
 	}
 
 	origin, err := getColor(h)
@@ -164,6 +192,7 @@ func println1(out int, attr uint16, v ...interface{}) (size int, err error) {
 		return 0, err
 	}
 
+	attr := foreTables[foreground] + backTables[background]
 	if err = setColor(h, attr); err != nil {
 		return 0, err
 	}
@@ -179,10 +208,16 @@ func println1(out int, attr uint16, v ...interface{}) (size int, err error) {
 	return
 }
 
-func printf(out int, attr uint16, format string, v ...interface{}) (size int, err error) {
-	h, w, err := getHW(out)
-	if err != nil {
-		return 0, err
+// Fprintf 带色彩输出的 fmt.Fprintf。
+// 颜色值只在 w 不为 os.Stderr、os.Stdin、os.Stdout 中的一个时才启作用，否则只向 w 输出普通字符串。
+func Fprintf(w io.Writer, foreground, background Color, format string, v ...interface{}) (size int, err error) {
+	if isMsys {
+		return fprintf(w, foreground, background, format, v...)
+	}
+
+	h, ok := getHW(w)
+	if !ok {
+		return fmt.Fprintf(w, format, v...)
 	}
 
 	origin, err := getColor(h)
@@ -190,6 +225,7 @@ func printf(out int, attr uint16, format string, v ...interface{}) (size int, er
 		return 0, err
 	}
 
+	attr := foreTables[foreground] + backTables[background]
 	if err = setColor(h, attr); err != nil {
 		return 0, err
 	}
@@ -205,23 +241,17 @@ func printf(out int, attr uint16, format string, v ...interface{}) (size int, er
 	return
 }
 
-// 功能同fmt.Print。但是输出源可以通过out指定为Stderr或是Stdout。
-// foreground，background为输出文字的前景和背景色。
-func Print(out int, foreground, background Color, v ...interface{}) (size int, err error) {
-	attr := foreTables[foreground] + backTables[background]
-	return print1(out, attr, v...)
+// Print 带色彩输出的 fmt.Print，输出到 os.Stdout。
+func Print(foreground, background Color, v ...interface{}) (int, error) {
+	return Fprint(os.Stdout, foreground, background, v...)
 }
 
-// 功能同fmt.Println。但是输出源可以通过out指定为Stderr或是Stdout。
-// foreground，background为输出文字的前景和背景色。
-func Println(out int, foreground, background Color, v ...interface{}) (size int, err error) {
-	attr := foreTables[foreground] + backTables[background]
-	return println1(out, attr, v...)
+// Println 带色彩输出的 fmt.Println，输出到 os.Stdout。
+func Println(foreground, background Color, v ...interface{}) (int, error) {
+	return Fprintln(os.Stdout, foreground, background, v...)
 }
 
-// 功能同fmt.Printf。但是输出源可以通过out指定为Stderr或是Stdout。
-// foreground，background为输出文字的前景和背景色。
-func Printf(out int, foreground, background Color, format string, v ...interface{}) (size int, err error) {
-	attr := foreTables[foreground] + backTables[background]
-	return printf(out, attr, format, v...)
+// Printf 带色彩输出的 fmt.Printf，输出到 os.Stdout。
+func Printf(foreground, background Color, format string, v ...interface{}) (int, error) {
+	return Fprintf(os.Stdout, foreground, background, format, v...)
 }
